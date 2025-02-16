@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   transactions-db:
     build:
@@ -7,8 +9,89 @@ services:
       - POSTGRES_PASSWORD=1234
       - POSTGRES_DB=finance_db
     volumes:
-        - "${PWD}/db-data:/var/lib/postgresql/data"
-        - "${PWD}/db-scripts/initialize_db_ddl.sql:/docker-entrypoint-initdb.d/initialize_db_ddl.sql"
+      - "db-data:/var/lib/postgresql/data"
+      - "./db-scripts/initialize_db_ddl.sql:/docker-entrypoint-initdb.d/1_initialize_db_ddl.sql"
+      - "./db-scripts/fix_order_items.sql:/docker-entrypoint-initdb.d/2_fix_order_items.sql"
+    networks:
+      - elt_network
     ports:
       - "5432:5432"
     command: ["postgres", "-c", "wal_level=logical", "-c", "hot_standby=on"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finance_db_user -d finance_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  analytical-db:
+    image: postgres:14
+    volumes:
+      - "analytics-data:/var/lib/postgresql/data"
+      - "./db-scripts/analytical_schema.sql:/docker-entrypoint-initdb.d/analytical_schema.sql"
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: analytics_db
+      POSTGRES_USER: analytics_user
+      POSTGRES_PASSWORD: analytics123
+    networks:
+      - elt_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics_user -d analytics_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+  data-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    environment:
+      - TRANSACTIONS_DB_HOST=transactions-db
+      - TRANSACTIONS_DB_PORT=5432
+      - TRANSACTIONS_DB_NAME=finance_db
+      - TRANSACTIONS_DB_USER=finance_db_user
+      - TRANSACTIONS_DB_PASSWORD=1234
+      - ANALYTICAL_DB_HOST=analytical-db
+      - ANALYTICAL_DB_PORT=5432
+      - ANALYTICAL_DB_NAME=analytics_db
+      - ANALYTICAL_DB_USER=analytics_user
+      - ANALYTICAL_DB_PASSWORD=analytics123
+      - LOG_LEVEL=INFO
+    networks:
+      - elt_network
+    depends_on:
+      analytical-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "src/pipeline/main.py", "--status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+    restart: unless-stopped
+    volumes:
+      - ./data-exports:/app/data-exports
+
+volumes:
+  db-data:
+  analytics-data:
+
+networks:
+  elt_network:
+    driver: bridge

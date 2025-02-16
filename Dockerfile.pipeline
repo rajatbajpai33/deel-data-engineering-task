@@ -1,0 +1,30 @@
+# Use official Python image
+FROM python:3.9-slim
+
+# Install required system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first to leverage Docker cache
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+
+# Copy application code
+COPY src/ ./src/
+
+# Create directory for data exports
+RUN mkdir -p /app/data-exports
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app/src
+
+# Set entrypoint
+ENTRYPOINT ["python", "src/pipeline/main.py"]
